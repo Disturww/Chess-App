@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, triggerRef, reactive } from "vue";
+import { ref, shallowRef, computed, triggerRef, reactive } from "vue";
 import { Chess, type Square } from "chess.js";
+import ChessSquare from "./ChessSquare.vue";
 
 import wP from "@/assets/pieces/wP.svg";
 import wR from "@/assets/pieces/wR.svg";
@@ -19,8 +20,20 @@ import bK from "@/assets/pieces/bK.svg";
 const game = ref(new Chess());
 
 const selectedSquare = ref<Square | null>(null);
-const legalSquares = ref(new Set<string>());
-const captureSquares = ref(new Set<string>());
+const legalSquares = shallowRef(new Set<string>());
+const captureSquares = shallowRef(new Set<string>());
+
+const cachedTurn = ref<'w' | 'b'>('w');
+const cachedCheckmate = ref(false);
+const cachedDraw = ref(false);
+const cachedCheck = ref(false);
+
+interface CachedMove {
+  to: string;
+  captured?: string;
+}
+
+let movesCache = new Map<string, CachedMove[]>();
 
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
@@ -66,17 +79,38 @@ function syncBoard() {
 }
 syncBoard();
 
+function rebuildMovesCache() {
+  const allMoves = game.value.moves({ verbose: true });
+  const cache = new Map<string, CachedMove[]>();
+  for (const move of allMoves) {
+    const from = move.from;
+    if (!cache.has(from)) cache.set(from, []);
+    cache.get(from)!.push({ to: move.to, captured: move.captured });
+  }
+  movesCache = cache;
+
+  const inCheck = game.value.isCheck();
+  const turn = game.value.turn();
+
+  cachedTurn.value = turn;
+  cachedCheck.value = inCheck;
+  cachedCheckmate.value = inCheck && allMoves.length === 0;
+  cachedDraw.value = !inCheck && allMoves.length === 0;
+
+  if (!cachedCheckmate.value && !cachedDraw.value) {
+    cachedDraw.value = game.value.isDraw();
+  }
+}
+
+rebuildMovesCache();
+
 function selectPiece(square: Square) {
   selectedSquare.value = square;
 
-  const moves = game.value.moves({
-    square,
-    verbose: true,
-  });
-
+  const cached = movesCache.get(square) || [];
   const legal = new Set<string>();
   const capture = new Set<string>();
-  for (const move of moves) {
+  for (const move of cached) {
     legal.add(move.to);
     if (move.captured) capture.add(move.to);
   }
@@ -137,6 +171,7 @@ function handleClick(square: Square) {
       }
     }
 
+    rebuildMovesCache();
     triggerRef(game);
   } catch {
     clearSelection();
@@ -149,6 +184,7 @@ function handleClick(square: Square) {
 function resetGame() {
   game.value = new Chess();
   syncBoard();
+  rebuildMovesCache();
   triggerRef(game);
   clearSelection();
 }
@@ -156,25 +192,25 @@ function resetGame() {
 const moveHistory = computed(() => game.value.history());
 
 const turnText = computed(() =>
-  game.value.turn() === "w"
+  cachedTurn.value === "w"
     ? "White"
     : "Black"
 );
 
 const gameStatus = computed(() => {
-  if (game.value.isCheckmate()) {
+  if (cachedCheckmate.value) {
     return `Checkmate! ${
-      game.value.turn() === "w"
+      cachedTurn.value === "w"
         ? "Black"
         : "White"
     } wins`;
   }
 
-  if (game.value.isDraw()) {
+  if (cachedDraw.value) {
     return "Draw";
   }
 
-  if (game.value.isCheck()) {
+  if (cachedCheck.value) {
     return "Check!";
   }
 
@@ -204,35 +240,17 @@ const gameStatus = computed(() => {
         </div>
 
         <div class="board">
-
-          <div
+          <ChessSquare
             v-for="sq in allSquares"
             :key="sq"
-            class="square"
-            :class="[
-              isLightMap[sq] ? 'light' : 'dark',
-
-              selectedSquare === sq
-                ? 'selected'
-                : '',
-
-              legalSquares.has(sq)
-                ? 'legal'
-                : '',
-
-              captureSquares.has(sq)
-                ? 'capture'
-                : '',
-            ]"
-            @click="handleClick(sq)"
-          >
-            <img
-              v-if="piecesBySquare[sq]"
-              :src="piecesBySquare[sq]"
-              class="piece"
-            />
-          </div>
-
+            :square="sq"
+            :is-light="isLightMap[sq]"
+            :is-selected="selectedSquare === sq"
+            :is-legal="legalSquares.has(sq)"
+            :is-capture="captureSquares.has(sq)"
+            :piece-src="piecesBySquare[sq] ?? null"
+            @square-click="handleClick"
+          />
         </div>
       </div>
 
@@ -301,67 +319,6 @@ const gameStatus = computed(() => {
     0 2px 12px rgba(0,0,0,.2);
 }
 
-.square {
-  width: 80px;
-  height: 80px;
-
-  display: flex;
-  justify-content: center;
-  align-items: center;
-
-  position: relative;
-  cursor: pointer;
-
-}
-
-.light {
-  background: #f0d9b5;
-}
-
-.dark {
-  background: #779556;
-}
-
-.selected {
-  box-shadow: inset 0 0 0 4px #ffd54f;
-}
-
-.legal::after {
-  content: "";
-
-  width: 20px;
-  height: 20px;
-
-  border-radius: 50%;
-
-  background: rgba(0,0,0,.18);
-
-  position: absolute;
-}
-
-.capture::after {
-  content: "";
-
-  position: absolute;
-  inset: 2px;
-
-  border: 4px solid rgba(255,60,60,.8);
-  border-radius: 50%;
-
-  box-sizing: border-box;
-}
-
-.piece {
-  width: 68px;
-  height: 68px;
-
-  pointer-events: none;
-}
-
-.square:hover {
-  filter: brightness(1.08);
-}
-
 .sidebar {
   width: 250px;
 
@@ -424,16 +381,6 @@ button:hover {
 @media (max-width: 700px) {
   .board {
     grid-template-columns: repeat(8, 45px);
-  }
-
-  .square {
-    width: 45px;
-    height: 45px;
-  }
-
-  .piece {
-    width: 38px;
-    height: 38px;
   }
 
   .sidebar {
