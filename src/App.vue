@@ -1,8 +1,14 @@
 <script setup lang="ts">
-import ChessBoard from './components/ChessBoard.vue';
+import { watchEffect } from 'vue'
+import { usePreferencesStore } from '@/stores/preferences'
+
+const prefs = usePreferencesStore()
+
+watchEffect(() => {
+  document.documentElement.classList.toggle('dark-mode', prefs.darkMode)
+})
 </script>
 
 <template>
-    <h1>Chess App</h1>
-    <ChessBoard />
+  <RouterView />
 </template>
